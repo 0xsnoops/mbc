@@ -229,12 +229,14 @@ async function createInitialPaymentRecord(event: MeterPaidEvent): Promise<void> 
         );
         // Function defaults to 'pending', we manually set to 'pending_finality' if needed
         // But schema defaults to 'pending'. We should use updateStatus immediately or change default.
-        // Changing to 'pending_finality' via update:
+        // Set status to pending_finality to start the confirmation timer
         db.payments.updateStatus.run('pending_finality', null, null, paymentId);
 
-        console.log(`[Listener] Recorded event ${eventId} as pending_finality`);
+        console.log(`[Listener] Recorded valid event ${eventId} for settlement.`);
+        // Note: The specific "Payment succeeded" log happens in executeTransfer later, 
+        // which drives the 'Success Indicator' req.
     } catch (e) {
-        // If unique constraint fails, it's a duplicate event, ignore
+        console.error(`[Listener] Failed to record payment: ${e}`);
     }
 }
 
