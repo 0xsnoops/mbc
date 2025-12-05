@@ -1,0 +1,42 @@
+{
+    "version": "0.1.0",
+    "name": "agent_blink_pay",
+    "instructions": [],
+    "events": [
+        {
+            "name": "MeterPaid",
+            "fields": [
+                {
+                    "name": "agent",
+                    "type": "publicKey",
+                    "index": false
+                },
+                {
+                    "name": "meter",
+                    "type": "publicKey",
+                    "index": false
+                },
+                {
+                    "name": "amount",
+                    "type": "u64",
+                    "index": false
+                },
+                {
+                    "name": "category",
+                    "type": "u8",
+                    "index": false
+                },
+                {
+                    "name": "nonce",
+                    "type": "u64",
+                    "index": false
+                },
+                {
+                    "name": "slot",
+                    "type": "u64",
+                    "index": false
+                }
+            ]
+        }
+    ]
+}

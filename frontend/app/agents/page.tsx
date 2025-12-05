@@ -68,24 +68,19 @@ export default function AgentsPage() {
     }
 
     async function toggleFreeze(agentId: string, currentlyFrozen: boolean) {
-        // =========================================================================
-        // TODO: Call backend to freeze/unfreeze agent
-        // =========================================================================
-        // In production, this would:
-        // 1. Call POST /agents/:id/freeze or /agents/:id/unfreeze
-        // 2. Backend would call set_policy on-chain
-        // 3. Update local state on success
-        // =========================================================================
+        const action = currentlyFrozen ? 'unfreeze' : 'freeze';
 
-        // For demo, just toggle local state
-        setAgents(agents.map(agent =>
-            agent.id === agentId
-                ? { ...agent, frozen: !currentlyFrozen }
-                : agent
-        ));
+        // "Real" Frontend Control: Redirect to Dial.to to sign the Action
+        // This leverages the "AgentBlinkPay" architecture where policy updates are Blinks.
+        const actionUrl = `${API_BASE_URL}/api/actions/agent?agentId=${agentId}&action=${action}`;
+        const dialUrl = `https://dial.to/?action=solana-action:${encodeURIComponent(actionUrl)}`;
 
-        alert(`Agent ${agentId} ${currentlyFrozen ? 'unfrozen' : 'frozen'} (demo mode)`);
-        alert(`Agent ${agentId} ${currentlyFrozen ? 'unfrozen' : 'frozen'} (demo mode)`);
+        // Open Dial.to in new tab to let user sign
+        window.open(dialUrl, '_blank');
+
+        // Optimistic update (optional, but good for UX)
+        // In real app, we'd wait for webhook or poll, but for demo this is fine
+        // as the user will see the success on Dial.to
     }
 
     async function openDetails(agent: Agent) {

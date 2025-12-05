@@ -23,6 +23,7 @@ import { BorshCoder, EventParser, Program, AnchorProvider, Idl } from '@coral-xy
 import { v4 as uuidv4 } from 'uuid';
 import * as db from '../db';
 import * as circle from './circle';
+import * as idl from '../idl/agent_blink_pay.json';
 
 // =============================================================================
 // CONFIGURATION
@@ -164,68 +165,28 @@ async function processLogs(logs: Logs): Promise<void> {
 }
 
 function parseMeterPaidEvent(logs: string[]): MeterPaidEvent | null {
-    const LOG_PREFIX = 'Payment recorded: ';
+    try {
+        const coder = new BorshCoder(idl as Idl);
+        const parser = new EventParser(PROGRAM_ID, coder);
 
-    for (const log of logs) {
-        if (log.includes(LOG_PREFIX)) {
-            try {
-                // Log format: "Payment recorded: agent=Pubkey, meter=Pubkey, amount=u64, nonce=u64"
-                // Extract values using regex
-                // Note: {:?} for Pubkey usually prints simple Base58 in newer Anchor, 
-                // but we handle potentially verbose formats just in case or simple strings.
-                // We assume standard "field=value" comma separated.
+        for (const event of parser.parseLogs(logs)) {
+            if (event.name === 'MeterPaid') {
+                // Anchor events are normalized. 'data' contains the fields.
+                // We cast to any because type inference from JSON IDL is limited here.
+                const data = event.data as any;
 
-                const content = log.split(LOG_PREFIX)[1];
-
-                // Regex to capture values. We accept any chars for values until comma or end.
-                const agentMatch = content.match(/agent=([^,]+)/);
-                const meterMatch = content.match(/meter=([^,]+)/);
-                const amountMatch = content.match(/amount=([^,]+)/);
-                const categoryMatch = content.match(/category=([^,]+)/); // Note: category might not be in log? Lib.rs checks...
-                // Lib.rs line 220: msg!("Payment recorded: agent={:?}, meter={:?}, amount={}, nonce={}", ...);
-                // Wait, Lib.rs DOES NOT log category in the msg! macro at line 220!
-                // It only emits it in the Event.
-                // WE HAVE A PROBLEM if we rely on logs and the log doesn't have category.
-
-                // CRITICAL: The log at line 220 does NOT contain category.
-                // "Payment recorded: agent={:?}, meter={:?}, amount={}, nonce={}"
-
-                // However, the Event data is emitted as base64 in "Program data: ..."
-                // Without IDL, parsing the base64 event data is hard and brittle.
-
-                // WORKAROUND:
-                // We can fetch the category from the Payment Authorization or Meter *after* we identify the meter/agent?
-                // Or we can modify the regex to be lenient and lookup the category from DB later?
-                // Actually, createInitialPaymentRecord takes `event.category`.
-                // If we don't have it, we are stuck.
-
-                // BUT, looking at the User Prompt's "Fix" code for createInitialPaymentRecord:
-                // "event.category" is used.
-
-                // If the on-chain program log is missing it, we have to:
-                // 1. Hope the user updates the on-chain program (Unlikely in this turn).
-                // 2. Derive it. The Meter has a category. The event implies authorization succeeded, so Meter.category == Payment.category.
-                // We can allow category to be 'undefined' here and look it up from the Meter in createInitialPaymentRecord.
-
-                const nonceMatch = content.match(/nonce=([^,]+)/);
-
-                if (agentMatch && meterMatch && amountMatch && nonceMatch) {
-                    return {
-                        agent: new PublicKey(agentMatch[1].trim()),
-                        meter: new PublicKey(meterMatch[1].trim()),
-                        amount: BigInt(amountMatch[1].trim()),
-                        category: 1, // Defaulting to 1 (AI_API) since logic log is missing it. 
-                        // Correct fix: Look up Meter off-chain and use meter.category.
-                        // We will do this lookup in createInitialPaymentRecord logic if needed, 
-                        // but here we return a placeholder that will be corrected or validated.
-                        nonce: BigInt(nonceMatch[1].trim()),
-                        slot: BigInt(0), // Will be updated with actual slot
-                    };
-                }
-            } catch (e) {
-                console.error('[Listener] Error parsing log:', e);
+                return {
+                    agent: data.agent,
+                    meter: data.meter,
+                    amount: BigInt(data.amount.toString()),
+                    category: Number(data.category),
+                    nonce: BigInt(data.nonce.toString()),
+                    slot: BigInt(data.slot.toString()),
+                };
             }
         }
+    } catch (e) {
+        console.error('[Listener] Error parsing logs with EventParser:', e);
     }
     return null;
 }

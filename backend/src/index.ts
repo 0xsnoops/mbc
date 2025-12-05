@@ -23,6 +23,23 @@ import actionsRoutes from './routes/actions';
 dotenv.config();
 
 // =============================================================================
+// VALIDATION
+// =============================================================================
+const REQUIRED_ENV = [
+    'CIRCLE_API_KEY',
+    'PAYER_SECRET_KEY',
+    'CIRCLE_USDC_TOKEN_ID',
+    'PROGRAM_ID' // Likely needed too
+];
+
+const missing = REQUIRED_ENV.filter(key => !process.env[key]);
+if (missing.length > 0) {
+    console.error(`[CRITICAL] Missing required environment variables: ${missing.join(', ')}`);
+    console.error('Please update your .env file.');
+    process.exit(1);
+}
+
+// =============================================================================
 // CONFIGURATION
 // =============================================================================
 

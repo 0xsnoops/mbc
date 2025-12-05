@@ -93,10 +93,19 @@ export async function createCircleWallet(label: string): Promise<string> {
     }
 }
 
+// In-memory cache for wallet ID -> Address mapping
+const addressCache = new Map<string, string>();
+
 /**
  * Gets the blockchain address for a Circle wallet.
+ * Caches the result to avoid hitting API rate limits.
  */
 export async function getWalletAddress(walletId: string): Promise<string> {
+    // Check cache first
+    if (addressCache.has(walletId)) {
+        return addressCache.get(walletId)!;
+    }
+
     console.log(`[Circle] Getting address for wallet: ${walletId}`);
 
     try {
@@ -107,6 +116,10 @@ export async function getWalletAddress(walletId: string): Promise<string> {
 
         const address = response.data.data.wallet.address;
         console.log(`[Circle] Wallet address: ${address}`);
+
+        // Cache the result
+        addressCache.set(walletId, address);
+
         return address;
 
     } catch (error: any) {

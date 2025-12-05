@@ -144,18 +144,18 @@ pub mod agent_blink_pay {
             AgentBlinkPayError::AmountExceedsMax
         );
 
-        // 2. Verify Category (already checked above, but rigorous here)
+        // 2. Verify Category Match
         require!(
             category == policy.allowed_category,
             AgentBlinkPayError::CategoryMismatch
         );
 
-        // 3. Verify Policy Hash (Public Input Integrity)
-        // We ensure the provided policy_hash matches the stored policy
-        require!(
-             policy.policy_hash.iter().zip(ctx.accounts.agent_policy.policy_hash.iter()).all(|(a, b)| a == b),
-             AgentBlinkPayError::InvalidProof // Re-using error for hash mismatch
-        );
+        // 3. (Optional) Verify Policy Hash Integrity
+        // In "Hybrid" mode, the inputs ARE the policy, so we trust the account state (set_policy).
+        // The policy_hash is stored for ZK evidence, but we don't need to re-hash strict inputs here
+        // unless we re-calculate the hash. Comparing policy.policy_hash to itself is useless.
+        // We removed the tautology.
+
 
         // verify_payment_policy_proof stub removed in favor of direct checks
         // =====================================================================
@@ -254,61 +254,9 @@ pub mod agent_blink_pay {
 /// let cpi_ctx = CpiContext::new(verifier_program.to_account_info(), cpi_accounts);
 /// sunspot_verifier::cpi::verify(cpi_ctx, public_inputs, proof)?;
 /// ```
-    fn verify_payment_policy_proof(
-    proof: &Vec<u8>,
-    amount: u64,
-    category: u8,
-    policy_hash: [u8; 32],
-) -> Result<()> {
-    // =========================================================================
-    // ZK PROOF VERIFICATION STRATEGY (Hybrid CPI)
-    // =========================================================================
-    // 
-    // Design Choice for MVP: "CPI to Sunspot-generated Verifier"
-    // 
-    // Reasons:
-    // 1. Storage: Verifier keys are large; deploying a dedicated program avoids 
-    //    maxing out AgentBlinkPay's program data size.
-    // 2. Upgradability: The verifier can be upgraded independently.
-    // 3. CU Limits: Verification is compute-heavy (~200k-400k CU). CPI allows
-    //    better isolation, though stack depth is a constraint.
-    //
-    // Implementation:
-    // This function acts as a "Router" to the specific verifier program.
-    //
-    // Constraints:
-    // - Max Proof Size: ~2KB (Groth16/UltraPlonk via Noir)
-    // - Public Inputs: Must be minimized to reduce calldata costs.
-    //
-    // Stub Logic:
-    // For the hackathon, we accept any non-empty proof to simulate the gas costs
-    // and instruction flow without needing the full ZK toolchain running locally.
-    // =========================================================================
-    
-    msg!("Verifying ZK proof (Stub Mode)");
-    msg!("  Public Inputs: [amount={}, category={}, policy_hash=...]", amount, category);
-    
-    // 1. Basic Sanity Check
-    require!(!proof.is_empty(), AgentBlinkPayError::InvalidProof);
-    
-    // 2. Compute Consumption Simulation
-    // Simulate ~5000 CUs of hashing to mimic verification overhead
-    // (In production, the CPI call consumes majority of CUs)
-    msg!("  Simulating verification compute...");
-    
-    // 3. CPI Call (Commented out for scaffold ref)
-    /*
-    let cpi_program = ctx.accounts.verifier_program.to_account_info();
-    let cpi_accounts = sunspot_verifier::cpi::accounts::Verify {
-        // ...
-    };
-    sunspot_verifier::cpi::verify(..., proof)?;
-    */
-    
-    msg!("ZK verification successful");
-    
-    Ok(())
-}
+    // NOTE: ZK Verification bypassed for MVP latency; enforcing policy via native Anchor checks.
+    // In production, this would be a CPI to the Sunspot-generated verifier program.
+
 
 // =============================================================================
 // ACCOUNT STRUCTURES
