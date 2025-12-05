@@ -201,23 +201,31 @@ async function createInitialPaymentRecord(event: MeterPaidEvent): Promise<void> 
         Number(event.nonce)
     );
 
-    // Stub: look up mocked agent/meter for safety if not found
-    const agentId = 'stub-agent-id';
-    const meterId = 'stub-meter-id';
-    // In real code: const agent = db.agents.findByPubkey.get(...)
+    // Real Implementation: Look up Agent and Meter by Pubkey
+    const agent = db.agents.findByPubkey.get(event.agent.toBase58()) as db.Agent | undefined;
+    if (!agent) {
+        console.error(`[Listener] Unknown agent pubkey: ${event.agent.toBase58()}`);
+        return; // specific error handling or ignore
+    }
+
+    const meter = db.meters.findByPubkey.get(event.meter.toBase58()) as db.Meter | undefined;
+    if (!meter) {
+        console.error(`[Listener] Unknown meter pubkey: ${event.meter.toBase58()}`);
+        return;
+    }
 
     try {
         db.payments.create.run(
             paymentId,
             eventId,
-            agentId,
-            meterId,
+            agent.id,
+            meter.id,
             Number(event.amount),
             Number(event.nonce),
             event.category,
             eventSlot,
-            'stub-from-wallet', // agent.circle_wallet_id
-            'stub-to-wallet'    // meter.merchant_wallet_id
+            agent.circle_wallet_id,
+            meter.merchant_wallet_id
         );
         // Function defaults to 'pending', we manually set to 'pending_finality' if needed
         // But schema defaults to 'pending'. We should use updateStatus immediately or change default.
