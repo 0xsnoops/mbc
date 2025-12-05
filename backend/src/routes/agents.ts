@@ -127,14 +127,28 @@ router.post('/agents', async (req: Request, res: Response) => {
                     PROGRAM_ID
                 );
 
-                // Policy hash (stub)
-                const policyHash = Buffer.from(crypto.createHash('sha256').update('stub_policy').digest());
+                // Policy Hash Calculation (Matching lib.rs logic)
+                // Hash = SHA256(max_per_tx (8 bytes LE) | allowed_category (1 byte) | salt)
+                // salt = "BlinkPay"
 
-                console.log(`[Agents] Sending set_policy tx...`);
+                const salt = Buffer.from('BlinkPay');
+                const maxBn = new BN(maxPerTx);
+                const categoryBuf = Buffer.alloc(1);
+                categoryBuf.writeUInt8(allowedCategory, 0);
+
+                const hashInput = Buffer.concat([
+                    maxBn.toArrayLike(Buffer, 'le', 8),
+                    categoryBuf,
+                    salt
+                ]);
+
+                const policyHash = crypto.createHash('sha256').update(hashInput).digest();
+
+                console.log(`[Agents] Sending set_policy tx... (Hash: ${policyHash.toString('hex')})`);
                 await program.methods.setPolicy(
                     [...policyHash],
                     allowedCategory,
-                    new BN(maxPerTx),
+                    maxBn,
                     false
                 )
                     .accounts({

@@ -11,9 +11,12 @@
 
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { Keypair, PublicKey } from '@solana/web3.js';
 import * as db from '../db';
 import * as circle from '../services/circle';
+import { Connection, PublicKey, Transaction, Keypair, SystemProgram } from '@solana/web3.js';
+import { Program, AnchorProvider, Idl, Wallet, BN } from '@coral-xyz/anchor';
+import { readFileSync } from 'fs';
+import path from 'path';
 
 const router = Router();
 
@@ -21,8 +24,34 @@ const router = Router();
 // CONFIGURATION
 // =============================================================================
 
-const PROGRAM_ID = process.env.PROGRAM_ID || 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS';
+const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID || 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS');
 const GATEWAY_BASE_URL = process.env.GATEWAY_BASE_URL || 'http://localhost:3000';
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'http://localhost:8899';
+
+// Setup Payer/Relayer
+let payerKv: Keypair;
+if (process.env.PAYER_SECRET_KEY && process.env.PAYER_SECRET_KEY.startsWith('[')) {
+    payerKv = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(process.env.PAYER_SECRET_KEY)));
+} else {
+    payerKv = Keypair.generate();
+    console.warn("[Providers] Using generated Payer Keypair (No funds!). Set PAYER_SECRET_KEY.");
+}
+const connection = new Connection(SOLANA_RPC_URL, 'confirmed');
+
+// Load Anchor Program
+let program: Program;
+try {
+    const idlPath = path.resolve(__dirname, '../../../onchain/target/idl/agent_blink_pay.json');
+    const idl = JSON.parse(readFileSync(idlPath, 'utf8'));
+    const provider = new AnchorProvider(
+        connection,
+        new Wallet(payerKv),
+        AnchorProvider.defaultOptions()
+    );
+    program = new Program(idl as Idl, PROGRAM_ID, provider);
+} catch (e) {
+    console.warn('[Providers] Could not load IDL. On-chain meter creation will effectively verify compilation but fail if IDL missing.');
+}
 
 // =============================================================================
 // POST /providers/meters - Register Meter
@@ -81,40 +110,79 @@ router.post('/providers/meters', async (req: Request, res: Response) => {
         const merchantWalletId = await circle.createCircleWallet(`Merchant: ${meterId}`);
 
         // =========================================================================
-        // TODO: Call create_meter on-chain
+        // Call create_meter on-chain
         // =========================================================================
-        // 
-        // const connection = new Connection(SOLANA_RPC_URL);
-        // 
-        // const meterPda = PublicKey.findProgramAddressSync(
-        //   [
-        //     Buffer.from('meter'),
-        //     authorityPubkey.toBuffer(),
-        //     meterIdBuffer,
-        //   ],
-        //   PROGRAM_ID
-        // )[0];
-        // 
-        // const ix = program.methods.createMeter(
-        //   new BN(pricePerCall),
-        //   category,
-        //   merchantWalletId,
-        //   requiresZk
-        // ).accounts({
-        //   authority: authorityPubkey,
-        //   meterId: meterIdAccount,
-        //   meter: meterPda,
-        //   systemProgram: SystemProgram.programId,
-        // }).instruction();
-        // 
-        // const tx = new Transaction().add(ix);
-        // await connection.sendTransaction(tx, [authority]);
-        // =========================================================================
+        if (program) {
+            console.log(`[Providers] Creating meter on-chain...`);
+
+            const [meterPda] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from('meter'),
+                    payerKv.publicKey.toBuffer(), // Authority is the relayer for now
+                    Buffer.from(meterId.slice(0, 8)) // Hackathon: Use first 8 chars as seed bytes or just UUID bytes? 
+                    // Actually, let's use the random meterKeypair we generated as the account, avoiding complex PDA seeds if possible?
+                    // Checks lib.rs: `init` using `seeds = [b"meter", authority.key().as_ref(), id.as_ref()]`
+                    // We need to pass `id` as string/bytes.
+                ],
+                PROGRAM_ID
+            );
+
+            // NOTE: lib.rs create_meter expects `id: String`. The PDA seeds use `id.as_bytes()`.
+            // We'll use the UUID string.
+
+            // Derive PDA correctly based on lib.rs
+            const [realMeterPda] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from('meter'),
+                    payerKv.publicKey.toBuffer(),
+                    Buffer.from(meterId)
+                ],
+                PROGRAM_ID
+            );
+
+            // Using full UUID 'meterId'
+            const ix = await program.methods.createMeter(
+                meterId,
+                new BN(pricePerCall),
+                category,
+                merchantWalletId,
+                requiresZk
+            ).accounts({
+                authority: payerKv.publicKey,
+                meter: realMeterPda,
+                systemProgram: SystemProgram.programId,
+            }).instruction();
+
+            const tx = new Transaction().add(ix);
+            const signature = await connection.sendTransaction(tx, [payerKv]);
+            await connection.confirmTransaction(signature, 'confirmed');
+
+            console.log(`[Providers] On-chain meter created. Sig: ${signature}`);
+
+            // Use Real PDA for DB record? Or keep generated keypair?
+            // The DB expects `meterPubkey`. If we use PDA, we should store PDA.
+            // If we use keypair, we must change program to strict init.
+            // Program is using PDA seeds. So we MUST use PDA.
+            // Updating `meterPubkey` variable for DB insertion below.
+            // (We ignore the previously generated random `meterKeypair` and use PDA)
+
+            // OVERRIDE default random keypair with actual PDA
+            // meterPubkey is const, so we can't reassign easily without refactor.
+            // We'll update logic to use PDA.
+        } else {
+            console.warn("[Providers] Program not loaded. Creating DB-only meter.");
+        }
+
+        // Re-derive PDA for storage (ensuring consistency)
+        const [finalMeterPubkey] = PublicKey.findProgramAddressSync(
+            [Buffer.from('meter'), payerKv.publicKey.toBuffer(), Buffer.from(meterId)],
+            PROGRAM_ID
+        );
 
         // Store in database
         db.meters.create.run(
             meterId,
-            meterPubkey,
+            finalMeterPubkey.toBase58(), // Use the PDA
             merchantWalletId,
             upstreamUrl,
             httpMethod.toUpperCase(),

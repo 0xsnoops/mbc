@@ -188,15 +188,28 @@ export async function transferUsdc(
         const entitySecretCiphertext = await encryptEntitySecret();
 
         // Resolve Destination Address (with Caching)
-        // We need the blockchain address of the merchant wallet to send funds.
-        let destinationAddress = addressCache.get(toWalletId);
-        if (!destinationAddress) {
-            console.log(`[Circle] Cache miss for ${toWalletId}, fetching address...`);
-            destinationAddress = await getWalletAddress(toWalletId);
-            addressCache.set(toWalletId, destinationAddress);
-        } else {
-            // console.debug(`[Circle] Cache hit for ${toWalletId}`);
+        // Check if toWalletId looks like a Circle Wallet ID (UUID) or a Solana Address (Base58).
+        // UUID regex: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(toWalletId);
+
+        let destinationAddress = toWalletId;
+
+        if (isUuid) {
+            // It's a Wallet ID, try to get address from cache or API
+            const cached = addressCache.get(toWalletId);
+            if (!cached) {
+                console.log(`[Circle] Cache miss for ${toWalletId} (UUID), fetching address...`);
+                try {
+                    destinationAddress = await getWalletAddress(toWalletId);
+                    addressCache.set(toWalletId, destinationAddress);
+                } catch (e) {
+                    throw new Error(`Failed to resolve destination wallet ID: ${toWalletId}`);
+                }
+            } else {
+                destinationAddress = cached;
+            }
         }
+        // Else: Assume it's a valid blockchain address and use it directly
 
         const response = await axios.post(
             `${CIRCLE_API_URL}/w3s/developer/transactions/transfer`,

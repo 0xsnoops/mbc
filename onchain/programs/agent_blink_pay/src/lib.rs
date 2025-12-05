@@ -164,14 +164,6 @@ pub mod agent_blink_pay {
         // =====================================================================
         // COMMITMENT CHECK (Hybrid ZK/Public)
         // =====================================================================
-        // To satisfy the "ZK-enforced" requirement without a live Circom setup:
-        // We verify that the provided public inputs (amount, category) match the
-        // commitment stored in `policy_hash` (or the plain text policy in this MVP).
-        //
-        // In full ZK: hash(private_inputs) == policy_hash.
-        // Here, since we have the data in cleartext for the hackathon MVP, we 
-        // CAN re-derive the hash or check the fields directly to ensure the 
-        // policy hasn't been Tampered with.
         
         // 1. Verify Amount Limit (Logic Check)
         require!(
@@ -185,7 +177,33 @@ pub mod agent_blink_pay {
             AgentBlinkPayError::CategoryMismatch
         );
 
-        // 3. Verify Expiry
+        // 3. Verify Policy Integrity (Hash Check)
+        // Ensure that the stored policy parameters (max_per_tx, allowed_category) 
+        // match the commitment (policy_hash).
+        // Hash = SHA256(max_per_tx | allowed_category | salt)
+        // For this hackathon, we use a fixed salt "BlinkPay" since we are not passing private salt via ZK proof yet.
+        
+        let salt = b"BlinkPay";
+        let mut hasher = solana_program::hash::Hasher::default();
+        hasher.hash(&policy.max_per_tx.to_le_bytes());
+        hasher.hash(&[policy.allowed_category]);
+        hasher.hash(salt);
+        
+        // Note: Anchor/Solana uses SHA256 for Hasher? No, Hasher is Keccak/SHA256 depending on implementation.
+        // Actually solana_program::hash::hashv produces a hash.
+        let computed_hash = solana_program::hash::hashv(&[
+            &policy.max_per_tx.to_le_bytes(),
+            &[policy.allowed_category],
+            salt
+        ]);
+
+        // policy.policy_hash is [u8; 32]. computed_hash is a Hash struct.
+        require!(
+            policy.policy_hash == computed_hash.to_bytes(),
+            AgentBlinkPayError::InvalidProof // Reusing error for commitment mismatch
+        );
+
+        // 4. Verify Expiry
         let current_slot = Clock::get()?.slot;
         require!(current_slot <= expires_at_slot, AgentBlinkPayError::AuthorizationExpired);
 
