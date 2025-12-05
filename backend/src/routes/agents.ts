@@ -413,6 +413,7 @@ router.post('/agents/:id/pay', async (req: Request, res: Response) => {
                 authorization: authPda,
                 payer: payerKv.publicKey,
                 systemProgram: SystemProgram.programId,
+                verifierProgram: PROGRAM_ID, // Self-CPI for now
             }).instruction();
 
             const recordIx = await program.methods.recordMeterPayment(
