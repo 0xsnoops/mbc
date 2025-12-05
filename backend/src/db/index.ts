@@ -33,6 +33,7 @@ export function initializeDatabase(): void {
   const schemaPath = path.join(__dirname, 'schema.sql');
   const schema = fs.readFileSync(schemaPath, 'utf-8');
   db.exec(schema);
+  runMigrations();
   console.log('Database initialized successfully');
 }
 
@@ -43,12 +44,31 @@ export function initializeDatabase(): void {
 export interface Agent {
   id: string;
   agent_pubkey: string;
+  agent_secret_key: string | null;
   circle_wallet_id: string;
   api_key: string;
   name: string | null;
   frozen: boolean;
   created_at: string;
   updated_at: string;
+}
+
+// =============================================================================
+// DATABASE MIGRATIONS
+// =============================================================================
+
+function runMigrations() {
+  try {
+    const tableInfo = db.prepare("PRAGMA table_info(agents)").all();
+    const hasSecretKey = tableInfo.some((col: any) => col.name === 'agent_secret_key');
+
+    if (!hasSecretKey) {
+      console.log('Migrating database: Adding agent_secret_key to agents table...');
+      db.prepare("ALTER TABLE agents ADD COLUMN agent_secret_key TEXT").run();
+    }
+  } catch (error) {
+    console.error('Migration failed:', error);
+  }
 }
 
 export interface Meter {
@@ -100,8 +120,8 @@ export interface Credit {
 
 export const agents = {
   create: db.prepare(`
-    INSERT INTO agents (id, agent_pubkey, circle_wallet_id, api_key, name)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO agents (id, agent_pubkey, agent_secret_key, circle_wallet_id, api_key, name)
+    VALUES (?, ?, ?, ?, ?, ?)
   `) as any,
 
   findById: db.prepare(`

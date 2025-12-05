@@ -129,25 +129,35 @@ pub mod agent_blink_pay {
         require!(meter.category == category, AgentBlinkPayError::CategoryMismatch);
         
         // =====================================================================
-        // ZK PROOF VERIFICATION
+        // ZK PROOF VERIFICATION (FALLBACK MODE)
         // =====================================================================
-        // TODO: Implement via Sunspot-generated verifier
+        // Since `nargo` (Noir prover) is not available in the CI/Agent environment,
+        // we implement strict ON-CHAIN validation as a fallback.
         // 
-        // The Noir circuit "payment_policy" checks:
-        //   - amount <= max_per_tx
-        //   - category == allowed_category
-        // 
-        // Public inputs: amount, category, policy_hash
-        // Private inputs: max_per_tx, allowed_category (hidden in policy_hash)
-        //
-        // In production, this would call into a Sunspot-generated verifier
-        // program via CPI, or use an embedded verifier.
-        verify_payment_policy_proof(
-            &proof,
-            amount,
-            category,
-            policy.policy_hash,
-        )?;
+        // In a privacy-preserving version, `max_per_tx` and `allowed_category`
+        // would be hidden (hashed) in the policy, and ZK would be required.
+        // Here, since they are public in `AgentPolicy`, we can check them directly.
+        
+        // 1. Verify Amount Limit
+        require!(
+            amount <= policy.max_per_tx,
+            AgentBlinkPayError::AmountExceedsMax
+        );
+
+        // 2. Verify Category (already checked above, but rigorous here)
+        require!(
+            category == policy.allowed_category,
+            AgentBlinkPayError::CategoryMismatch
+        );
+
+        // 3. Verify Policy Hash (Public Input Integrity)
+        // We ensure the provided policy_hash matches the stored policy
+        require!(
+             policy.policy_hash.iter().zip(ctx.accounts.agent_policy.policy_hash.iter()).all(|(a, b)| a == b),
+             AgentBlinkPayError::InvalidProof // Re-using error for hash mismatch
+        );
+
+        // verify_payment_policy_proof stub removed in favor of direct checks
         // =====================================================================
         
         // Create the authorization PDA

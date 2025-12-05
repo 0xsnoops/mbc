@@ -19,8 +19,12 @@ import {
     TransactionInstruction,
     SystemProgram,
     LAMPORTS_PER_SOL,
+    Keypair,
 } from '@solana/web3.js';
 import * as db from '../db';
+import { Program, AnchorProvider, Idl, Wallet, BN } from '@coral-xyz/anchor';
+import { readFileSync } from 'fs';
+import path from 'path';
 
 const router = Router();
 
@@ -312,46 +316,88 @@ async function buildFreezeTx(
     freeze: boolean
 ): Promise<Transaction> {
     // =========================================================================
-    // TODO: Build actual set_policy instruction
-    // =========================================================================
-    // 
-    // const agentPubkey = new PublicKey(agent.agent_pubkey);
-    // 
-    // const policyPda = PublicKey.findProgramAddressSync(
-    //   [Buffer.from('policy'), agentPubkey.toBuffer()],
-    //   PROGRAM_ID
-    // )[0];
-    // 
-    // // Build instruction using Anchor
-    // const ix = await program.methods.setPolicy(
-    //   currentPolicyHash,  // Keep existing hash
-    //   currentCategory,    // Keep existing category
-    //   currentMaxPerTx,    // Keep existing max
-    //   freeze              // Set frozen flag
-    // ).accounts({
-    //   agent: agentPubkey,
-    //   agentPolicy: policyPda,
-    //   payer: userPubkey,
-    //   systemProgram: SystemProgram.programId,
-    // }).instruction();
+    // Build set_policy instruction
     // =========================================================================
 
-    // For demo: create a stub transaction with a memo
+    // 1. Recover Agent Keypair
+    if (!agent.agent_secret_key) {
+        throw new Error("Agent secret key missing. Cannot sign freeze tx.");
+    }
+    const secretKey = Uint8Array.from(Buffer.from(agent.agent_secret_key, 'hex'));
+    const agentKeypair = Keypair.fromSecretKey(secretKey);
+
+    // 2. Load Program
+    // Helper to get program instance (duplicated for now)
+    const idlPath = path.resolve(__dirname, '../../../onchain/target/idl/agent_blink_pay.json');
+    const idl = JSON.parse(readFileSync(idlPath, 'utf8'));
+    // We use a dummy provider just to create the Program object
+    const provider = new AnchorProvider(
+        connection,
+        new Wallet(Keypair.generate()),
+        AnchorProvider.defaultOptions()
+    );
+    const program = new Program(idl as Idl, PROGRAM_ID, provider);
+
+    const agentPubkey = new PublicKey(agent.agent_pubkey);
+
+    const [policyPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('policy'), agentPubkey.toBuffer()],
+        PROGRAM_ID
+    );
+
+    // We need existing policy state to preserve other fields?
+    // Or we overwrite?
+    // The instruction overwrites: `policy.allowed_category = allowed_category;`
+    // So we should fetch current state if possible, or use defaults.
+    // For this hackathon, let's assume standard defaults if fetching is complex,
+    // OR try to fetch account.
+
+    let currentCategory = 1; // Default AI_API
+    let currentMaxPerTx = new BN(1000000); // Default 1 USDC
+    let currentPolicyHash = [...Buffer.alloc(32)]; // Empty hash
+
+    try {
+        const policyAccount = await program.account.agentPolicy.fetchNullable(policyPda);
+        if (policyAccount) {
+            currentCategory = (policyAccount as any).allowed_category;
+            currentMaxPerTx = (policyAccount as any).max_per_tx;
+            currentPolicyHash = (policyAccount as any).policy_hash;
+        }
+    } catch (e) {
+        console.log("Could not fetch existing policy, using defaults.");
+    }
+
+    // Build instruction
+    const ix = await program.methods.setPolicy(
+        currentPolicyHash,  // Keep existing hash
+        currentCategory,    // Keep existing category
+        currentMaxPerTx,    // Keep existing max
+        freeze              // Set frozen flag
+    ).accounts({
+        agent: agentPubkey,
+        agentPolicy: policyPda,
+        payer: userPubkey,
+        systemProgram: SystemProgram.programId,
+    }).instruction();
+
     const transaction = new Transaction();
+    transaction.add(ix);
 
-    // Add a memo instruction as placeholder
+    // Add memo for UX
     const memoIx = new TransactionInstruction({
         keys: [],
         programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
-        data: Buffer.from(`AgentBlinkPay: ${freeze ? 'Freeze' : 'Unfreeze'} agent ${agent.id}`),
+        data: Buffer.from(`AgentBlinkPay: ${freeze ? 'Freeze' : 'Unfreeze'} agent ${agent.name || agent.id}`),
     });
-
     transaction.add(memoIx);
 
     // Set recent blockhash
     const { blockhash } = await connection.getLatestBlockhash();
     transaction.recentBlockhash = blockhash;
     transaction.feePayer = userPubkey;
+
+    // PARTIAL SIGN by Agent
+    transaction.partialSign(agentKeypair);
 
     return transaction;
 }

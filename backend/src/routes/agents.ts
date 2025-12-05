@@ -15,6 +15,9 @@ import crypto from 'crypto';
 import * as db from '../db';
 import * as circle from '../services/circle';
 import { Connection, PublicKey, Transaction, Keypair, SystemProgram } from '@solana/web3.js';
+import { Program, AnchorProvider, Idl, Wallet, BN } from '@coral-xyz/anchor';
+import { readFileSync } from 'fs';
+import path from 'path';
 
 const router = Router();
 
@@ -24,6 +27,43 @@ const router = Router();
 
 const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID || 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS');
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'http://localhost:8899';
+const connection = new Connection(SOLANA_RPC_URL, 'confirmed');
+
+// Load Relayer (Payer) Keypair
+let payerKv: Keypair;
+try {
+    if (process.env.PAYER_SECRET_KEY) {
+        if (process.env.PAYER_SECRET_KEY.startsWith('[')) {
+            const secretKey = Uint8Array.from(JSON.parse(process.env.PAYER_SECRET_KEY));
+            payerKv = Keypair.fromSecretKey(secretKey);
+        } else {
+            console.warn('PAYER_SECRET_KEY as string not supported, generating fallback.');
+            payerKv = Keypair.generate();
+        }
+    } else {
+        console.warn('PAYER_SECRET_KEY not set. Using generated keypair.');
+        payerKv = Keypair.generate();
+    }
+} catch (e) {
+    console.warn('Failed to load PAYER_SECRET_KEY:', e);
+    payerKv = Keypair.generate();
+}
+
+// Load Anchor Program
+let program: Program;
+try {
+    // Try to load IDL from local build
+    const idlPath = path.resolve(__dirname, '../../../onchain/target/idl/agent_blink_pay.json');
+    const idl = JSON.parse(readFileSync(idlPath, 'utf8'));
+    const provider = new AnchorProvider(
+        connection,
+        new Wallet(payerKv),
+        AnchorProvider.defaultOptions()
+    );
+    program = new Program(idl as Idl, PROGRAM_ID, provider);
+} catch (e) {
+    console.warn('[Agents] Could not load local IDL. On-chain ops will fail.', e);
+}
 
 // =============================================================================
 // POST /agents - Create Agent
@@ -58,6 +98,7 @@ router.post('/agents', async (req: Request, res: Response) => {
         const agentId = uuidv4();
         const agentKeypair = Keypair.generate();
         const agentPubkey = agentKeypair.publicKey.toBase58();
+        const agentSecretKey = Buffer.from(agentKeypair.secretKey).toString('hex');
 
         // Create Circle wallet
         const circleWalletId = await circle.createCircleWallet(`Agent: ${agentId}`);
@@ -69,10 +110,46 @@ router.post('/agents', async (req: Request, res: Response) => {
         db.agents.create.run(
             agentId,
             agentPubkey,
+            agentSecretKey,
             circleWalletId,
             apiKey,
             name || `Agent ${agentId.slice(0, 8)}`
         );
+
+        // =========================================================================
+        // Call set_policy on-chain
+        // =========================================================================
+        try {
+            if (program) {
+                const [policyPda] = PublicKey.findProgramAddressSync(
+                    [Buffer.from('policy'), agentKeypair.publicKey.toBuffer()],
+                    PROGRAM_ID
+                );
+
+                // Policy hash (stub)
+                const policyHash = Buffer.from(crypto.createHash('sha256').update('stub_policy').digest());
+
+                console.log(`[Agents] Sending set_policy tx...`);
+                await program.methods.setPolicy(
+                    [...policyHash],
+                    allowedCategory,
+                    new BN(maxPerTx),
+                    false
+                )
+                    .accounts({
+                        agent: agentKeypair.publicKey,
+                        agentPolicy: policyPda,
+                        payer: payerKv.publicKey,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .signers([payerKv, agentKeypair])
+                    .rpc();
+
+                console.log(`[Agents] AgentPolicy created.`);
+            }
+        } catch (e) {
+            console.error(`[Agents] Failed to initialize on-chain policy:`, e);
+        }
 
         // =========================================================================
         // TODO: Call set_policy on-chain to create AgentPolicy account
@@ -261,6 +338,13 @@ router.post('/agents/:id/pay', async (req: Request, res: Response) => {
             return;
         }
 
+        // Recover Agent Keypair
+        if (!agent.agent_secret_key) {
+            throw new Error("Agent secret key missing. Cannot sign.");
+        }
+        const secretKey = Uint8Array.from(Buffer.from(agent.agent_secret_key, 'hex'));
+        const agentKeypair = Keypair.fromSecretKey(secretKey);
+
         // Validate meter
         const meter = db.meters.findById.get(meterId) as db.Meter | undefined;
         if (!meter) {
@@ -269,130 +353,93 @@ router.post('/agents/:id/pay', async (req: Request, res: Response) => {
         }
 
         // Generate secure 64-bit nonce
-        // distinct from Date.now() to prevent predictable replay attacks
         const nonce = crypto.randomBytes(8).readBigUInt64LE(0);
-
-        // Expiry: Current slot + 150 (approx 60 seconds)
-        const currentSlot = await getCurrentSlot();
+        const currentSlot = await connection.getSlot();
         const expiresAtSlot = currentSlot + 150;
 
-        // =========================================================================
-        // STEP 1: Generate ZK Proof (Stubbed)
-        // =========================================================================
-        // 
-        // In production, use Noir WASM prover:
-        // 
-        // import { Noir } from '@noir-lang/noir_js';
-        // 
-        // const circuit = await Noir.compile('payment_policy');
-        // const proof = await circuit.generateProof({
-        //   amount: BigInt(amount),
-        //   category: BigInt(category),
-        //   policy_hash: policyHash,
-        //   max_per_tx: BigInt(maxPerTx),     // from agent policy
-        //   allowed_category: BigInt(allowedCategory),
-        //   policy_salt: policySalt,
-        // });
-        // =========================================================================
+        // Generate ZK Proof (Stubbed)
         const proof = generateStubProof(amount, category);
 
-        console.log(`[Agents] Generated proof (${proof.length} bytes)`);
-
         // =========================================================================
-        // STEP 2: Submit authorize_payment_with_proof Transaction
-        // =========================================================================
-        // 
-        // const connection = new Connection(SOLANA_RPC_URL);
-        // 
-        // const authPda = PublicKey.findProgramAddressSync(
-        //   [
-        //     Buffer.from('auth'),
-        //     new PublicKey(agent.agent_pubkey).toBuffer(),
-        //     new PublicKey(meterPubkey).toBuffer(),
-        //     new BN(nonce).toArrayLike(Buffer, 'le', 8),
-        //   ],
-        //   PROGRAM_ID
-        // )[0];
-        // 
-        // const authIx = program.methods.authorizePaymentWithProof(
-        //   new BN(amount),
-        //   category,
-        //   new BN(nonce),
-        //   new BN(expiresAtSlot),
-        //   proof
-        // ).accounts({
-        //   agent: new PublicKey(agent.agent_pubkey),
-        //   agentPolicy: policyPda,
-        //   meter: new PublicKey(meterPubkey),
-        //   authorization: authPda,
-        //   payer: payer.publicKey,
-        //   systemProgram: SystemProgram.programId,
-        // }).instruction();
-        // 
-        // const tx1 = new Transaction().add(authIx);
-        // await connection.sendTransaction(tx1, [payer, agentKeypair]);
+        // Submit Transactions
         // =========================================================================
 
-        console.log(`[Agents] Submitting authorize_payment_with_proof (stub)`);
+        let txSignature = "";
 
-        // =========================================================================
-        // STEP 3: Submit record_meter_payment Transaction
-        // =========================================================================
-        // 
-        // const recordIx = program.methods.recordMeterPayment(
-        //   new BN(nonce)
-        // ).accounts({
-        //   agent: new PublicKey(agent.agent_pubkey),
-        //   meter: new PublicKey(meterPubkey),
-        //   authorization: authPda,
-        // }).instruction();
-        // 
-        // const tx2 = new Transaction().add(recordIx);
-        // await connection.sendTransaction(tx2, [payer, agentKeypair]);
-        // =========================================================================
+        if (program) {
+            console.log(`[Agents] Building on-chain transactions...`);
 
-        console.log(`[Agents] Submitting record_meter_payment (stub)`);
+            const [policyPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from('policy'), agentKeypair.publicKey.toBuffer()],
+                PROGRAM_ID
+            );
 
-        // For demo purposes, directly create a credit
-        // In production, the event listener handles this
-        const paymentId = uuidv4();
+            const [authPda] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from('auth'),
+                    agentKeypair.publicKey.toBuffer(),
+                    new PublicKey(meterPubkey).toBuffer(),
+                    new BN(nonce.toString()).toArrayLike(Buffer, 'le', 8),
+                ],
+                PROGRAM_ID
+            );
+
+            const authIx = await program.methods.authorizePaymentWithProof(
+                new BN(amount),
+                category,
+                new BN(nonce.toString()),
+                new BN(expiresAtSlot),
+                [...proof]
+            ).accounts({
+                agent: agentKeypair.publicKey,
+                agentPolicy: policyPda,
+                meter: new PublicKey(meterPubkey),
+                authorization: authPda,
+                payer: payerKv.publicKey,
+                systemProgram: SystemProgram.programId,
+            }).instruction();
+
+            const recordIx = await program.methods.recordMeterPayment(
+                new BN(nonce.toString())
+            ).accounts({
+                agent: agentKeypair.publicKey,
+                meter: new PublicKey(meterPubkey),
+                authorization: authPda,
+            }).instruction();
+
+            const tx = new Transaction().add(authIx).add(recordIx);
+
+            console.log(`[Agents] Sending payment tx...`);
+            txSignature = await connection.sendTransaction(tx, [payerKv, agentKeypair]);
+
+            console.log(`[Agents] Tx sent: ${txSignature}`);
+            await connection.confirmTransaction(txSignature, 'confirmed');
+        } else {
+            console.warn("[Agents] Program not loaded, skipping on-chain submit.");
+            txSignature = "simulation_mode";
+        }
+
         const eventId = circle.generateIdempotencyKey(
             agent.agent_pubkey,
             meter.meter_pubkey,
             nonce
         );
 
-        db.payments.create.run(
-            paymentId,
-            eventId,
-            agent.id,
-            meter.id,
-            amount,
-            nonce,
-            category,
-            currentSlot,
-            agent.circle_wallet_id,
-            meter.merchant_wallet_id
-        );
-
-        db.payments.updateStatus.run('succeeded', null, 'stub_transfer', paymentId);
-
-        const creditId = uuidv4();
-        db.credits.create.run(creditId, agent.id, meter.id, paymentId);
-
-        console.log(`[Agents] Payment completed, credit created: ${creditId}`);
+        // We do NOT create the payment record here. The Solana Listener will pick up the event.
+        // We return the signature so frontend can poll or display it.
 
         res.json({
             success: true,
-            paymentId,
-            creditId,
-            nonce: nonce.toString(), // Convert BigInt to string for JSON
-            message: 'Payment authorized and recorded. You now have credit for the meter.',
+            network: 'devnet',
+            txSignature,
+            eventId,
+            nonce: nonce.toString(),
+            message: 'Payment submitted to Solana. Settlement pending.',
         });
 
-    } catch (error) {
+    } catch (error: any) {
         console.error('[Agents] Error processing payment:', error);
-        res.status(500).json({ error: 'Failed to process payment' });
+        res.status(500).json({ error: 'Failed to process payment', details: error.message });
     }
 });
 
