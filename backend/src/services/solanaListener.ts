@@ -35,6 +35,7 @@ const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID || 'Fg6PaFpoGXkYsidMpWTK
 
 // Commitment level for event subscriptions
 const COMMITMENT: Commitment = 'confirmed';
+import { Finality } from '@solana/web3.js';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -324,11 +325,75 @@ async function retryFailedPayments() {
 
 /**
  * Recovers state on startup.
+ * 
+ * Scans recent blockchain history to find any MeterPaid events that occurred
+ * while the listener was offline. Relying on the DB unique constraint on 
+ * event_id to prevent duplicates.
  */
 async function recoverState() {
     console.log('[Listener] Recovering state...');
-    // We don't rely on 'last_processed_slot' for payment state, 
-    // that is for scraping logs. Payment state is in 'payments' table.
+
+    try {
+        // 1. Fetch recent transactions for the program
+        // For hackathon scale, last 50-100 txs is likely sufficient to catch up on a restart.
+        // In production, we would track `last_processed_signature`.
+        const signatures = await state.connection.getSignaturesForAddress(
+            PROGRAM_ID,
+            { limit: 50 },
+            COMMITMENT as Finality
+        );
+
+        console.log(`[Listener] Scanning ${signatures.length} recent transactions for missed events...`);
+
+        // 2. Process transactions in reverse chronological order
+        const reversed = signatures.reverse();
+
+        for (const sigInfo of reversed) {
+            if (sigInfo.err) continue;
+
+            try {
+                // Fetch transaction with logs
+                const tx = await state.connection.getTransaction(sigInfo.signature, {
+                    commitment: COMMITMENT as Finality,
+                    maxSupportedTransactionVersion: 0
+                });
+
+                if (!tx || !tx.meta || !tx.meta.logMessages) continue;
+
+                // Re-use processLogs logic structure
+                // We fake a "Logs" object or just parse directly.
+                // EventParser takes an iterator of strings.
+
+                const coder = new BorshCoder(idl as Idl);
+                const parser = new EventParser(PROGRAM_ID, coder);
+
+                for (const event of parser.parseLogs(tx.meta.logMessages)) {
+                    if (event.name === 'MeterPaid') {
+                        const data = event.data as any;
+                        const ev: MeterPaidEvent = {
+                            agent: data.agent,
+                            meter: data.meter,
+                            amount: BigInt(data.amount.toString()),
+                            category: Number(data.category),
+                            nonce: BigInt(data.nonce.toString()),
+                            slot: BigInt(tx.slot.toString()), // Use tx slot
+                        };
+                        // Attempt to record (will skip if duplicated)
+                        await createInitialPaymentRecord(ev);
+                    }
+                }
+
+            } catch (e) {
+                console.warn(`[Listener] Failed to process historical tx ${sigInfo.signature}:`, e);
+            }
+        }
+        console.log('[Listener] Historical scan complete.');
+
+    } catch (e) {
+        console.error('[Listener] State recovery failed:', e);
+    }
+
+    // Process any pending items in DB
     await processPendingFinality();
     await retryFailedPayments();
 }

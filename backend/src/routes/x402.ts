@@ -154,6 +154,8 @@ router.all('/m/:meterId/*', authenticateAgent, async (req: Request, res: Respons
             },
         };
 
+        // Standard x402 Header
+        res.setHeader('WWW-Authenticate', `Token realm="AgentBlinkPay", error="insufficient_credits", meter_id="${meter.id}", amount=${meter.price_per_call}`);
         res.status(402).json(x402Response);
         return;
     }

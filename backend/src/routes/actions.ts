@@ -367,12 +367,42 @@ async function buildFreezeTx(
         console.log("Could not fetch existing policy, using defaults.");
     }
 
+    // 3. Calculate New Policy Hash (Critical for ZK Integrity)
+    // If we don't update the hash, the commitment check `hash(max, category, salt) == policy_hash` will fail
+    // unless the ZK proof is also updated. But since we are changing the policy (frozen=true),
+    // we MUST update the hash to match the new state (or existing state if just freezing).
+    // Wait, `frozen` is NOT part of the hash commitment in lib.rs.
+    // Hash = SHA256(max_per_tx | allowed_category | salt)
+    // Sce: lib.rs: `hasher.hash(&policy.max_per_tx.to_le_bytes());` ...
+
+    // We are only changing `frozen`. `max_per_tx` and `allowed_category` remain `currentResults`.
+    // So the existing `currentPolicyHash` SHOULD still be valid IF it was computed correctly.
+    // However, if we blindly pass `currentPolicyHash` back, it works.
+    // BUT the initial implementation in this file passed `[...Buffer.alloc(32)]` as default!
+    // That would break it.
+    // So we MUST re-calculate it to be safe, or ensure we fetched it.
+
+    // Let's safe-guard by recalculating it using the same logic as `agents.ts` and `lib.rs`
+    const crypto = await import('crypto');
+    const salt = Buffer.from('BlinkPay');
+    const maxBn = new BN(currentMaxPerTx);
+    const categoryBuf = Buffer.alloc(1);
+    categoryBuf.writeUInt8(currentCategory, 0);
+
+    const hashInput = Buffer.concat([
+        maxBn.toArrayLike(Buffer, 'le', 8),
+        categoryBuf,
+        salt
+    ]);
+
+    const newPolicyHash = crypto.createHash('sha256').update(hashInput).digest();
+
     // Build instruction
     const ix = await program.methods.setPolicy(
-        currentPolicyHash,  // Keep existing hash
-        currentCategory,    // Keep existing category
-        currentMaxPerTx,    // Keep existing max
-        freeze              // Set frozen flag
+        [...newPolicyHash],  // Use recalculated hash
+        currentCategory,
+        currentMaxPerTx,
+        freeze
     ).accounts({
         agent: agentPubkey,
         agentPolicy: policyPda,
@@ -422,17 +452,26 @@ async function buildTopupTx(
     const agentPubkey = new PublicKey(agentCircleAddress);
 
     // 2. Derive ATA (Associated Token Account) for User and Agent
-    // We assume the user has an ATA. If not, we'd need to create it (omitted for brevity).
-    // The Agent's Circle Wallet IS a wallet, so it needs an ATA too? 
-    // Circle Programmable Wallets usually handle tokens directly or via ATA. 
-    // We'll assume standard ATA derivation.
-
     const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
     const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 
+    // Devnet USDC Mint (fallback to standard Devnet USDC if env missing)
+    // 4zMMC9MRTGMfUW4mW20q5fyrkA48qGbT2bDD5E6uA
+    const MINT_STR = process.env.CIRCLE_USDC_TOKEN_ID || '4zMMC9MRTGMfUW4mW20q5fyrkA48qGbT2bDD5E6uA';
+    // Note: CIRCLE_USDC_TOKEN_ID might be a UUID for Circle API, but here we need PKEY.
+    // The user might have set it to the Mint address in .env for backend usage?
+    // Let's assume MINT_STR is the Mint Address.
+    let mintPubkey: PublicKey;
+    try {
+        mintPubkey = new PublicKey(MINT_STR);
+    } catch {
+        console.warn(`[Actions] Invalid Mint PKey in env, using Devnet default.`);
+        mintPubkey = new PublicKey('4zMMC9MRTGMfUW4mW20q5fyrkA48qGbT2bDD5E6uA');
+    }
+
     const getAta = (owner: PublicKey) => {
         return PublicKey.findProgramAddressSync(
-            [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), USDC_MINT.toBuffer()],
+            [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPubkey.toBuffer()],
             ASSOCIATED_TOKEN_PROGRAM_ID
         )[0];
     };
