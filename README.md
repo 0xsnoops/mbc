@@ -273,7 +273,7 @@ We use a **CPI-based Verification Architecture** to keep the main program lightw
 -   **Verifier Placement**: The ZK verifier is deployed as a separate, Sunspot-generated Solana program.
 -   **Integration**: `AgentBlinkPay` makes a Cross-Program Invocation (CPI) to the verifier, passing the proof and public inputs (`amount`, `category`, `policy_hash`).
 -   **Compute Budget**: ZK verification allows roughly ~200k CU. By keeping public inputs minimal (hash commitments), we stay well within the standard transaction limits.
--   **Hackathon MVP Strategy**: AgentBlinkPay implements **Direct On-Chain Policy Enforcement**. While the Noir circuits (`zk/`) are fully architected for private witness generation, the production deployment currently validates policy constraints (Amount <= Max) using native Anchor checks to ensure maximum stability and transparency during live demos.
+-   **Zero-Knowledge Architecture**: AgentBlinkPay uses a **Hybrid Policy Engine**. The Noir circuits (`zk/`) define the privacy constraints. For the Hackathon MVP, we enforce these constraints (`max_per_tx`) using native Anchor program logic to ensure maximum speed and stability during live demos, while maintaining the ZK-ready data structures (Policy Hashes) on-chain.
 
 ## Key Features
 
