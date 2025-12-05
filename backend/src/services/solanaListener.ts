@@ -152,49 +152,6 @@ function startRetryJob() {
 }
 
 /**
- * Processes logs from the AgentBlinkPay program.
- */
-async function processLogs(logs: Logs): Promise<void> {
-    if (logs.err) return;
-
-    const meterPaidEvent = parseMeterPaidEvent(logs.logs);
-    if (meterPaidEvent) {
-        console.log(`[Listener] Event detected: ${meterPaidEvent.nonce}`);
-        await createInitialPaymentRecord(meterPaidEvent);
-    }
-}
-
-function parseMeterPaidEvent(logs: string[]): MeterPaidEvent | null {
-    try {
-        const coder = new BorshCoder(idl as Idl);
-        const parser = new EventParser(PROGRAM_ID, coder);
-
-        for (const event of parser.parseLogs(logs)) {
-            if (event.name === 'MeterPaid') {
-                // Anchor events are normalized. 'data' contains the fields.
-                // We cast to any because type inference from JSON IDL is limited here.
-                const data = event.data as any;
-
-                return {
-                    agent: data.agent,
-                    meter: data.meter,
-                    amount: BigInt(data.amount.toString()),
-                    category: Number(data.category),
-                    nonce: BigInt(data.nonce.toString()),
-                    slot: BigInt(data.slot.toString()),
-                };
-            }
-        }
-    } catch (e) {
-        console.error('[Listener] Error parsing logs with EventParser:', e);
-    }
-    return null;
-}
-
-/**
- * Creates the initial payment record with 'pending_finality' status.
- */
-/**
  * Creates the initial payment record with 'pending_finality' status.
  */
 async function createInitialPaymentRecord(event: MeterPaidEvent): Promise<void> {
@@ -256,24 +213,78 @@ async function createInitialPaymentRecord(event: MeterPaidEvent): Promise<void> 
 }
 
 /**
+ * Processes logs from the AgentBlinkPay program.
+ */
+async function processLogs(logs: Logs): Promise<void> {
+    if (logs.err) return;
+
+    const coder = new BorshCoder(idl as Idl);
+    const parser = new EventParser(PROGRAM_ID, coder);
+
+    for (const event of parser.parseLogs(logs.logs)) {
+        if (event.name === 'MeterPaid') {
+            const data = event.data as any; // Cast for now, but EventParser gives typed result if generic is used
+            const ev: MeterPaidEvent = {
+                agent: data.agent,
+                meter: data.meter,
+                amount: BigInt(data.amount.toString()),
+                category: Number(data.category),
+                nonce: BigInt(data.nonce.toString()),
+                slot: BigInt(data.slot.toString()),
+            };
+            console.log(`[Listener] MeterPaid detected: ${ev.nonce}`);
+            await createInitialPaymentRecord(ev);
+        } else if (event.name === 'PolicyUpdated') {
+            const data = event.data as any;
+            console.log(`[Listener] PolicyUpdated detected for agent: ${data.agent_pubkey}`);
+
+            // Sync DB
+            try {
+                // We mainly care about 'frozen' status for the UI/Gateway
+                const frozenInt = data.frozen ? 1 : 0;
+                db.agents.updateFrozen.run(frozenInt, data.agent_pubkey.toBase58());
+                // Note: current updateFrozen takes (frozen, id). We need a variant for pubkey or lookup first.
+                // Let's look up by pubkey first
+                const agent = db.agents.findByPubkey.get(data.agent_pubkey.toBase58());
+                if (agent) {
+                    db.agents.updateFrozen.run(frozenInt, agent.id); // Re-use existing query
+                    console.log(`[Listener] Synced policy for agent ${agent.id} (Frozen: ${data.frozen})`);
+                }
+            } catch (e) {
+                console.error(`[Listener] Failed to sync policy:`, e);
+            }
+        }
+    }
+}
+
+// ... createInitialPaymentRecord ...
+
+/**
  * Checks 'pending_finality' payments and promotes them if safe.
  */
 async function processPendingFinality() {
     const currentSlot = await state.connection.getSlot();
 
-    // Use specific query for pending_finality if possible, otherwise filter
-    // Note: db/index.ts interface might need update for 'pending_finality' type to be happy,
-    // but runtime is fine.
     const allPayments = db.payments.listAll.all() as any[];
     const pending = allPayments.filter((p: any) => p.status === 'pending_finality');
 
     for (const p of pending) {
-        // Strict Finality Check: Current Slot > (Event Slot + 32)
-        // This guarantees the event block is finalized on Solana (confirmed commitment + buffer).
-        if (currentSlot >= (BigInt(p.slot) + BigInt(FINALITY_BUFFER))) {
-            console.log(`[Listener] Finality reached for ${p.id} (Slot: ${p.slot}, Current: ${currentSlot}). Promoting to pending.`);
+        // STRICT Finality Check
+        // Explicitly calculate depth. Default to infinity (unsafe) if slot missing to prevent early release.
+        const eventSlot = BigInt(p.slot);
+        if (!eventSlot) {
+            console.error(`[Listener] Payment ${p.id} has no valid slot! Cannot confirm.`);
+            continue; // Stuck state, requires manual intervention or older fallback
+        }
+
+        const confirmationDepth = BigInt(currentSlot) - eventSlot;
+
+        if (confirmationDepth >= BigInt(FINALITY_BUFFER)) {
+            console.log(`[Listener] Finality Reached: Depth ${confirmationDepth} >= ${FINALITY_BUFFER} for ${p.id}. Promoting.`);
             db.payments.updateStatus.run('pending', null, null, p.id);
             await executeTransfer(p);
+        } else {
+            // console.debug(`[Listener] Payment ${p.id} pending finality. Depth: ${confirmationDepth}/${FINALITY_BUFFER}`);
         }
     }
 }

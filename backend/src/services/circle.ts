@@ -187,18 +187,16 @@ export async function transferUsdc(
     try {
         const entitySecretCiphertext = await encryptEntitySecret();
 
-        // Get actual destination address if strictly required, but Circle internal transfers usually support walletId
-        // However, the prompt says "destinationAddress: to" refering to walletId?
-        // Circle API "Transfer" usually requires a blockchain address or a walletId + destinationType.
-        // For Developer Controlled Wallets or User Controlled, typically we send to an address.
-        // Let's assume we need the address of the TO wallet.
-        // OPTIMIZATION: In Phase 1 mapping, we might not have the address associated with 'toWalletId' cached.
-        // We might need to fetch it or store it.
-        // BUT `transferUsdc` is called by `solanaListener` which has `meter.merchant_wallet_id`.
-        // If `merchant_wallet_id` is a Circle Wallet ID (as per schema), we need its address to transfer TO it.
-        // Wait, Circle Transfers API allows `destinationAddress` to be a blockchain address.
-        // Let's look up the address for `toWalletId`.
-        const destinationAddress = await getWalletAddress(toWalletId);
+        // Resolve Destination Address (with Caching)
+        // We need the blockchain address of the merchant wallet to send funds.
+        let destinationAddress = addressCache.get(toWalletId);
+        if (!destinationAddress) {
+            console.log(`[Circle] Cache miss for ${toWalletId}, fetching address...`);
+            destinationAddress = await getWalletAddress(toWalletId);
+            addressCache.set(toWalletId, destinationAddress);
+        } else {
+            // console.debug(`[Circle] Cache hit for ${toWalletId}`);
+        }
 
         const response = await axios.post(
             `${CIRCLE_API_URL}/w3s/developer/transactions/transfer`,
