@@ -17,6 +17,22 @@ const CIRCLE_API_KEY = process.env.CIRCLE_API_KEY || '';
 const CIRCLE_API_URL = process.env.CIRCLE_API_URL || 'https://api.circle.com/v1';
 const CIRCLE_ENTITY_SECRET = process.env.CIRCLE_ENTITY_SECRET || '';
 
+/**
+ * Validates that necessary Circle environment variables are set.
+ * Should be called on application startup.
+ */
+export function validateConfiguration(): void {
+    const missing = [];
+    if (!CIRCLE_API_KEY) missing.push('CIRCLE_API_KEY');
+    if (!CIRCLE_ENTITY_SECRET) missing.push('CIRCLE_ENTITY_SECRET');
+    if (!process.env.CIRCLE_USDC_TOKEN_ID) missing.push('CIRCLE_USDC_TOKEN_ID');
+
+    if (missing.length > 0) {
+        throw new Error(`[Circle] Missing required environment variables: ${missing.join(', ')}`);
+    }
+    console.log('[Circle] Configuration validated.');
+}
+
 // =============================================================================
 // SECURITY UTILITIES
 // =============================================================================
@@ -191,11 +207,7 @@ export async function transferUsdc(
                 entitySecretCiphertext,
                 amounts: [amount],
                 destinationAddress: destinationAddress,
-                tokenId: process.env.CIRCLE_USDC_TOKEN_ID || 'USDC-DevKeys-Here',
-                // NOTE: TokenID depends on network. Sandbox has a specific ID.
-                // We should make this configurable. If not provided, we might fail.
-                // For now, let's assume the user will set CIRCLE_USDC_TOKEN_ID in env.
-                // Fallback: This ID is often network specific. 
+                tokenId: process.env.CIRCLE_USDC_TOKEN_ID, // Validated in validateConfiguration
                 walletId: fromWalletId,
                 feeLevel: 'MEDIUM',
             },

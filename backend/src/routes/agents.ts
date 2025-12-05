@@ -119,6 +119,7 @@ router.post('/agents', async (req: Request, res: Response) => {
         // =========================================================================
         // Call set_policy on-chain
         // =========================================================================
+        let onChainSetupSuccess = false;
         try {
             if (program) {
                 const [policyPda] = PublicKey.findProgramAddressSync(
@@ -145,37 +146,29 @@ router.post('/agents', async (req: Request, res: Response) => {
                     .signers([payerKv, agentKeypair])
                     .rpc();
 
-                console.log(`[Agents] AgentPolicy created.`);
+                console.log(`[Agents] AgentPolicy created on-chain.`);
+                onChainSetupSuccess = true;
+            } else {
+                // No program loaded - mark as success but log warning
+                console.warn(`[Agents] Program not loaded, skipping on-chain setup.`);
+                onChainSetupSuccess = true; // Allow demo to proceed
             }
         } catch (e) {
             console.error(`[Agents] Failed to initialize on-chain policy:`, e);
-        }
 
-        // =========================================================================
-        // TODO: Call set_policy on-chain to create AgentPolicy account
-        // =========================================================================
-        // 
-        // In production, we would:
-        // 1. Build set_policy instruction with policy parameters
-        // 2. Sign and submit transaction
-        // 3. Wait for confirmation
-        // 
-        // const connection = new Connection(SOLANA_RPC_URL);
-        // const policyPda = PublicKey.findProgramAddressSync(
-        //   [Buffer.from('policy'), agentKeypair.publicKey.toBuffer()],
-        //   PROGRAM_ID
-        // )[0];
-        // 
-        // const ix = program.methods.setPolicy(
-        //   policyHash,
-        //   allowedCategory,
-        //   new BN(maxPerTx),
-        //   false
-        // ).accounts({...}).instruction();
-        // 
-        // const tx = new Transaction().add(ix);
-        // await connection.sendTransaction(tx, [payer, agentKeypair]);
-        // =========================================================================
+            // =========================================================================
+            // DB-CHAIN CONSISTENCY: Delete DB row if on-chain setup fails
+            // This prevents orphaned agents that exist in DB but not on-chain
+            // =========================================================================
+            try {
+                db.agents.delete.run(agentId);
+                console.log(`[Agents] Rolled back DB record for ${agentId}`);
+            } catch (dbErr) {
+                console.error(`[Agents] Failed to rollback DB:`, dbErr);
+            }
+
+            throw new Error('Failed to create on-chain policy. Agent creation rolled back.');
+        }
 
         console.log(`[Agents] Agent created: ${agentId}`);
 
@@ -440,6 +433,110 @@ router.post('/agents/:id/pay', async (req: Request, res: Response) => {
     } catch (error: any) {
         console.error('[Agents] Error processing payment:', error);
         res.status(500).json({ error: 'Failed to process payment', details: error.message });
+    }
+});
+
+// =============================================================================
+// POST /agents/:id/freeze - Freeze/Unfreeze Agent
+// =============================================================================
+router.post('/agents/:id/freeze', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { frozen } = req.body; // true or false
+
+        const agent = db.agents.findById.get(id) as db.Agent | undefined;
+        if (!agent) {
+            res.status(404).json({ error: 'Agent not found' });
+            return;
+        }
+
+        // Update DB first
+        db.agents.updateFrozen.run(frozen ? 1 : 0, id);
+
+        // Update On-Chain
+        if (program) {
+            const secretKey = Uint8Array.from(Buffer.from(agent.agent_secret_key!, 'hex'));
+            const agentKeypair = Keypair.fromSecretKey(secretKey);
+            const [policyPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from('policy'), agentKeypair.publicKey.toBuffer()],
+                PROGRAM_ID
+            );
+
+            // We need current policy params to avoid overwriting with defaults
+            // Fetch or use defaults (MVP: use defaults if fetch fails)
+            let category = 1;
+            let max = new BN(1000000);
+            let pHash = [...Buffer.alloc(32)];
+
+            try {
+                const acc = await program.account.agentPolicy.fetch(policyPda);
+                category = (acc as any).allowed_category;
+                max = (acc as any).max_per_tx;
+                pHash = (acc as any).policy_hash;
+            } catch { }
+
+            await program.methods.setPolicy(pHash, category, max, !!frozen)
+                .accounts({
+                    agent: agentKeypair.publicKey,
+                    agentPolicy: policyPda,
+                    payer: payerKv.publicKey,
+                    systemProgram: SystemProgram.programId,
+                })
+                .signers([payerKv, agentKeypair])
+                .rpc();
+        }
+
+        res.json({ success: true, frozen: !!frozen });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// =============================================================================
+// PUT /agents/:id/policy - Update Policy
+// =============================================================================
+router.put('/agents/:id/policy', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { maxPerTx, allowedCategory } = req.body;
+
+        const agent = db.agents.findById.get(id) as db.Agent | undefined;
+        if (!agent) {
+            res.status(404).json({ error: 'Agent not found' });
+            return;
+        }
+
+        if (program) {
+            const secretKey = Uint8Array.from(Buffer.from(agent.agent_secret_key!, 'hex'));
+            const agentKeypair = Keypair.fromSecretKey(secretKey);
+            const [policyPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from('policy'), agentKeypair.publicKey.toBuffer()],
+                PROGRAM_ID
+            );
+
+            // Fetch current frozen state to preserve it
+            let frozen = false;
+            let pHash = [...Buffer.alloc(32)];
+            try {
+                const acc = await program.account.agentPolicy.fetch(policyPda);
+                frozen = (acc as any).frozen;
+                pHash = (acc as any).policy_hash;
+            } catch { }
+
+            await program.methods.setPolicy(pHash, allowedCategory, new BN(maxPerTx), frozen)
+                .accounts({
+                    agent: agentKeypair.publicKey,
+                    agentPolicy: policyPda,
+                    payer: payerKv.publicKey,
+                    systemProgram: SystemProgram.programId,
+                })
+                .signers([payerKv, agentKeypair])
+                .rpc();
+        }
+
+        res.json({ success: true, maxPerTx, allowedCategory });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
     }
 });
 

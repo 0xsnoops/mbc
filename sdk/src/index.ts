@@ -190,8 +190,34 @@ export class AgentClient {
             // Trigger payment via backend
             await this.handlePayment(x402Metadata);
 
+            // =========================================================================
+            // CRITICAL: Wait for Circle transfer to complete before retrying
+            // The backend submits the Solana tx, but the Circle transfer happens
+            // asynchronously via the event listener. We must poll for credit.
+            // =========================================================================
+            console.log(`[AgentSDK] Waiting for credit to be created...`);
+
+            let creditReady = false;
+            for (let attempt = 0; attempt < 20; attempt++) {
+                await this.delay(500); // 500ms between attempts
+
+                if (await this.hasCredit(meterId)) {
+                    creditReady = true;
+                    console.log(`[AgentSDK] Credit confirmed after ${attempt + 1} attempts`);
+                    break;
+                }
+
+                if (attempt % 4 === 0) {
+                    console.log(`[AgentSDK] Still waiting for credit... (attempt ${attempt + 1}/20)`);
+                }
+            }
+
+            if (!creditReady) {
+                throw new Error('Payment submitted but credit not confirmed after 10 seconds. Circle transfer may still be processing.');
+            }
+
             // Retry the request
-            console.log(`[AgentSDK] Payment completed, retrying request...`);
+            console.log(`[AgentSDK] Credit confirmed, retrying request...`);
             response = await this.fetchWithTimeout(url, {
                 ...options,
                 headers,
@@ -204,6 +230,13 @@ export class AgentClient {
         }
 
         return response;
+    }
+
+    /**
+     * Delay utility for polling.
+     */
+    private delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     /**

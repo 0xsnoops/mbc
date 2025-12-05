@@ -96,7 +96,7 @@ export interface Payment {
   slot: number;
   from_wallet_id: string;
   to_wallet_id: string;
-  status: 'pending' | 'processing' | 'succeeded' | 'failed';
+  status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'pending_finality';
   error_message: string | null;
   circle_transfer_id: string | null;
   created_at: string;
@@ -142,6 +142,10 @@ export const agents = {
 
   list: db.prepare(`
     SELECT * FROM agents ORDER BY created_at DESC
+  `) as any,
+
+  delete: db.prepare(`
+    DELETE FROM agents WHERE id = ?
   `) as any,
 };
 

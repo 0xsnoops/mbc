@@ -194,15 +194,16 @@ function parseMeterPaidEvent(logs: string[]): MeterPaidEvent | null {
 /**
  * Creates the initial payment record with 'pending_finality' status.
  */
+/**
+ * Creates the initial payment record with 'pending_finality' status.
+ */
 async function createInitialPaymentRecord(event: MeterPaidEvent): Promise<void> {
-    // In a real implementation, we'd get the event slot from the context
-    // For now, we fetch the current slot
-    const currentSlot = await state.connection.getSlot();
-    const eventSlot = Number(event.slot) || currentSlot;
-
-    // Look up agent/meter (stubbed for brevity as in original)
-    // ...
-    // Assuming DB lookups work as before
+    // Strictly use the event slot. If missing or 0, something is wrong with the event emission.
+    const eventSlot = Number(event.slot);
+    if (!eventSlot || eventSlot <= 0) {
+        console.error(`[Listener] Invalid event slot: ${event.slot}. Skipping record.`);
+        return;
+    }
 
     const paymentId = uuidv4();
     const eventId = circle.generateIdempotencyKey(
@@ -210,6 +211,14 @@ async function createInitialPaymentRecord(event: MeterPaidEvent): Promise<void> 
         event.meter.toBase58(),
         Number(event.nonce)
     );
+
+    // Check if event already handled to avoid duplicates
+    // We can use the event_id index logic or explicit check
+    const existing = db.payments.findByEventId.get(eventId);
+    if (existing) {
+        console.log(`[Listener] Event ${eventId} already recorded. Skipping.`);
+        return;
+    }
 
     // Real Implementation: Look up Agent and Meter by Pubkey
     const agent = db.agents.findByPubkey.get(event.agent.toBase58()) as db.Agent | undefined;
@@ -237,14 +246,10 @@ async function createInitialPaymentRecord(event: MeterPaidEvent): Promise<void> 
             agent.circle_wallet_id,
             meter.merchant_wallet_id
         );
-        // Function defaults to 'pending', we manually set to 'pending_finality' if needed
-        // But schema defaults to 'pending'. We should use updateStatus immediately or change default.
         // Set status to pending_finality to start the confirmation timer
         db.payments.updateStatus.run('pending_finality', null, null, paymentId);
 
-        console.log(`[Listener] Recorded valid event ${eventId} for settlement.`);
-        // Note: The specific "Payment succeeded" log happens in executeTransfer later, 
-        // which drives the 'Success Indicator' req.
+        console.log(`[Listener] Recorded valid event ${eventId} (Slot: ${eventSlot}) for settlement.`);
     } catch (e) {
         console.error(`[Listener] Failed to record payment: ${e}`);
     }
@@ -256,15 +261,17 @@ async function createInitialPaymentRecord(event: MeterPaidEvent): Promise<void> 
 async function processPendingFinality() {
     const currentSlot = await state.connection.getSlot();
 
-    // Helper to find payments with status 'pending_finality'
-    // We assume db.payments.findByStatus exists or we use a raw query
-    // const pending = db.payments.findByStatus.all('pending_finality');
-    // Using stub logic for query:
-    const pending = db.payments.listAll.all().filter((p: any) => p.status === 'pending_finality') as db.Payment[];
+    // Use specific query for pending_finality if possible, otherwise filter
+    // Note: db/index.ts interface might need update for 'pending_finality' type to be happy,
+    // but runtime is fine.
+    const allPayments = db.payments.listAll.all() as any[];
+    const pending = allPayments.filter((p: any) => p.status === 'pending_finality');
 
     for (const p of pending) {
-        if (currentSlot - p.slot >= FINALITY_BUFFER) {
-            console.log(`[Listener] Finality reached for ${p.id}. Promoting to pending.`);
+        // Strict Finality Check: Current Slot > (Event Slot + 32)
+        // This guarantees the event block is finalized on Solana (confirmed commitment + buffer).
+        if (currentSlot >= (BigInt(p.slot) + BigInt(FINALITY_BUFFER))) {
+            console.log(`[Listener] Finality reached for ${p.id} (Slot: ${p.slot}, Current: ${currentSlot}). Promoting to pending.`);
             db.payments.updateStatus.run('pending', null, null, p.id);
             await executeTransfer(p);
         }

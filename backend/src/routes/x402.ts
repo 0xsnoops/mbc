@@ -24,6 +24,7 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import { Connection } from '@solana/web3.js';
 import { createProxyMiddleware, Options as ProxyOptions } from 'http-proxy-middleware';
 import * as db from '../db';
 import { v4 as uuidv4 } from 'uuid';
@@ -35,6 +36,7 @@ const router = Router();
 // =============================================================================
 
 const PROGRAM_ID = process.env.PROGRAM_ID || 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS';
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'http://localhost:8899';
 const NETWORK = process.env.SOLANA_NETWORK || 'devnet';
 
 // =============================================================================
@@ -50,6 +52,10 @@ interface X402Response {
         meterPubkey: string;
         programId: string;
         network: string;
+        // Extended Fields for "Real" Transaction Construction
+        nonce: string;        // 64-bit unique nonce
+        expiresAt: number;    // Slot expiry
+        policyHash?: string;  // Hash commitment (optional, client might derive or fetch)
     };
 }
 
@@ -143,6 +149,8 @@ router.all('/m/:meterId/*', authenticateAgent, async (req: Request, res: Respons
                 meterPubkey: meter.meter_pubkey,
                 programId: PROGRAM_ID,
                 network: NETWORK,
+                nonce: Date.now().toString(),
+                expiresAt: (await getCurrentSlot()) + 150, // Valid for ~1 min
             },
         };
 
@@ -241,5 +249,14 @@ router.get('/m/:meterId/credit-status', authenticateAgent, (req: Request, res: R
         category: meter.category,
     });
 });
+
+async function getCurrentSlot(): Promise<number> {
+    try {
+        const connection = new Connection(SOLANA_RPC_URL);
+        return await connection.getSlot();
+    } catch {
+        return 0;
+    }
+}
 
 export default router;

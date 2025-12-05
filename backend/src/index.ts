@@ -29,7 +29,8 @@ const REQUIRED_ENV = [
     'CIRCLE_API_KEY',
     'PAYER_SECRET_KEY',
     'CIRCLE_USDC_TOKEN_ID',
-    'PROGRAM_ID' // Likely needed too
+    'CIRCLE_ENTITY_SECRET',
+    'PROGRAM_ID'
 ];
 
 const missing = REQUIRED_ENV.filter(key => !process.env[key]);
