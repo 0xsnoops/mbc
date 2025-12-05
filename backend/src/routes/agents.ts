@@ -162,6 +162,14 @@ router.get('/agents/:id', async (req: Request, res: Response) => {
             circleWalletId: agent.circle_wallet_id,
             circleBalance,
             recentSpend: circle.formatUsdcAmount(recentSpend),
+            recentPayments: recentPayments.map(p => ({
+                id: p.id,
+                meterId: p.meter_id,
+                amount: p.amount,
+                amountFormatted: circle.formatUsdcAmount(p.amount),
+                status: p.status,
+                createdAt: p.created_at,
+            })),
             frozen: agent.frozen,
             createdAt: agent.created_at,
         });
@@ -245,6 +253,14 @@ router.post('/agents/:id/pay', async (req: Request, res: Response) => {
             return;
         }
 
+        // Authentication: Verify API Key
+        const apiKey = req.headers['x-agent-api-key'] as string;
+        if (!apiKey || apiKey !== agent.api_key) {
+            console.warn(`[Agents] Unauthorized payment attempt for agent ${id}`);
+            res.status(401).json({ error: 'Invalid API Key' });
+            return;
+        }
+
         // Validate meter
         const meter = db.meters.findById.get(meterId) as db.Meter | undefined;
         if (!meter) {
@@ -252,10 +268,13 @@ router.post('/agents/:id/pay', async (req: Request, res: Response) => {
             return;
         }
 
-        // Generate nonce and expiry
-        const nonce = Date.now();
+        // Generate secure 64-bit nonce
+        // distinct from Date.now() to prevent predictable replay attacks
+        const nonce = crypto.randomBytes(8).readBigUInt64LE(0);
+
+        // Expiry: Current slot + 150 (approx 60 seconds)
         const currentSlot = await getCurrentSlot();
-        const expiresAtSlot = currentSlot + 150; // ~1 minute at 400ms/slot
+        const expiresAtSlot = currentSlot + 150;
 
         // =========================================================================
         // STEP 1: Generate ZK Proof (Stubbed)
@@ -367,7 +386,7 @@ router.post('/agents/:id/pay', async (req: Request, res: Response) => {
             success: true,
             paymentId,
             creditId,
-            nonce,
+            nonce: nonce.toString(), // Convert BigInt to string for JSON
             message: 'Payment authorized and recorded. You now have credit for the meter.',
         });
 

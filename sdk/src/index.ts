@@ -61,6 +61,17 @@ export interface AgentConfig {
 }
 
 /**
+ * Utility for USDC Unit conversion (6 decimals).
+ */
+export const UsdcUnits = {
+    /** Converts human-readable USDC to base units (e.g., 1.5 -> 1500000) */
+    toBaseUnits: (amount: number): number => Math.floor(amount * 1_000_000),
+
+    /** Converts base units to human-readable USDC (e.g., 1500000 -> 1.5) */
+    fromBaseUnits: (amount: number): number => amount / 1_000_000,
+};
+
+/**
  * x402 payment metadata returned by gateway on 402 response.
  */
 export interface X402Metadata {

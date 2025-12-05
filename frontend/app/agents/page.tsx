@@ -37,6 +37,9 @@ export default function AgentsPage() {
     const [agents, setAgents] = useState<Agent[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
+    const [recentPayments, setRecentPayments] = useState<any[]>([]);
+    const [detailsLoading, setDetailsLoading] = useState(false);
 
     // Fetch agents on mount
     useEffect(() => {
@@ -82,6 +85,25 @@ export default function AgentsPage() {
         ));
 
         alert(`Agent ${agentId} ${currentlyFrozen ? 'unfrozen' : 'frozen'} (demo mode)`);
+        alert(`Agent ${agentId} ${currentlyFrozen ? 'unfrozen' : 'frozen'} (demo mode)`);
+    }
+
+    async function openDetails(agent: Agent) {
+        setSelectedAgent(agent);
+        setDetailsLoading(true);
+        setRecentPayments([]);
+
+        try {
+            const res = await fetch(`${API_BASE_URL}/agents/${agent.id}`);
+            if (res.ok) {
+                const data = await res.json();
+                setRecentPayments(data.recentPayments || []);
+            }
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setDetailsLoading(false);
+        }
     }
 
     return (
@@ -168,7 +190,7 @@ export default function AgentsPage() {
                                                 </button>
                                                 <button
                                                     className="btn btn-sm btn-secondary"
-                                                    onClick={() => alert(`View details for ${agent.id}`)}
+                                                    onClick={() => openDetails(agent)}
                                                 >
                                                     Details
                                                 </button>
@@ -200,8 +222,69 @@ export default function AgentsPage() {
                     </code>
                 </div>
             </div>
+
+            {/* Details Modal (Simple inline implementation for demo) */}
+            {selectedAgent && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100
+                }}>
+                    <div style={{
+                        background: 'var(--surface)', padding: '2rem', borderRadius: '12px', width: '600px', maxHeight: '80vh', overflowY: 'auto'
+                    }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+                            <h2>{selectedAgent.name} Details</h2>
+                            <button className="btn btn-sm btn-secondary" onClick={() => setSelectedAgent(null)}>Close</button>
+                        </div>
+
+                        <h4>Recent Payments</h4>
+                        {detailsLoading ? (
+                            <p>Loading payments...</p>
+                        ) : (
+                            <table style={{ width: '100%', marginTop: '1rem', fontSize: '0.9rem' }}>
+                                <thead>
+                                    <tr>
+                                        <th style={{ textAlign: 'left' }}>Time</th>
+                                        <th style={{ textAlign: 'left' }}>Meter Output</th>
+                                        <th style={{ textAlign: 'right' }}>Amount</th>
+                                        <th style={{ textAlign: 'center' }}>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {recentPayments.length === 0 ? (
+                                        <tr><td colSpan={4} style={{ textAlign: 'center', padding: '1rem' }}>No recent payments.</td></tr>
+                                    ) : (
+                                        recentPayments.map(p => (
+                                            <tr key={p.id}>
+                                                <td>{new Date(p.createdAt).toLocaleTimeString()}</td>
+                                                <td>{p.meterId.slice(0, 8)}...</td>
+                                                <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>${p.amountFormatted}</td>
+                                                <td style={{ textAlign: 'center' }}>
+                                                    <span className={`badge badge-${p.status === 'succeeded' ? 'success' : 'warning'}`}>
+                                                        {p.status}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        )}
+
+                        <div style={{ marginTop: '2rem', background: '#f5f5f5', padding: '1rem', borderRadius: '8px' }}>
+                            <code>ID: {selectedAgent.id}</code><br />
+                            <code>Pubkey: {selectedAgent.agentPubkey}</code>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
+}
+
+// Add state for modal
+function useAgentDetails() {
+    // ... logic moved to main component state for simplicity
 }
 
 // =============================================================================

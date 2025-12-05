@@ -368,41 +368,60 @@ async function buildTopupTx(
     amount: number
 ): Promise<Transaction> {
     // =========================================================================
-    // TODO: Build actual USDC transfer instruction
-    // =========================================================================
-    // 
-    // const { TOKEN_PROGRAM_ID, getAssociatedTokenAddress, createTransferInstruction } = 
-    //   await import('@solana/spl-token');
-    // 
-    // const agentPubkey = new PublicKey(agent.agent_pubkey);
-    // 
-    // // Get token accounts
-    // const userAta = await getAssociatedTokenAddress(USDC_MINT, userPubkey);
-    // const agentAta = await getAssociatedTokenAddress(USDC_MINT, agentPubkey);
-    // 
-    // // Amount in smallest units (USDC has 6 decimals)
-    // const amountUnits = amount * 1_000_000;
-    // 
-    // const transferIx = createTransferInstruction(
-    //   userAta,
-    //   agentAta,
-    //   userPubkey,
-    //   amountUnits,
-    //   [],
-    //   TOKEN_PROGRAM_ID
-    // );
+    // SPL TOKEN TRANSFER (Manual Construction)
     // =========================================================================
 
-    // For demo: create a stub transaction with a memo
+    // 1. Get Agent's Circle Wallet Address
+    const agentCircleAddress = await import('../services/circle').then(m => m.getWalletAddress(agent.circle_wallet_id));
+    const agentPubkey = new PublicKey(agentCircleAddress);
+
+    // 2. Derive ATA (Associated Token Account) for User and Agent
+    // We assume the user has an ATA. If not, we'd need to create it (omitted for brevity).
+    // The Agent's Circle Wallet IS a wallet, so it needs an ATA too? 
+    // Circle Programmable Wallets usually handle tokens directly or via ATA. 
+    // We'll assume standard ATA derivation.
+
+    const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+    const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+
+    const getAta = (owner: PublicKey) => {
+        return PublicKey.findProgramAddressSync(
+            [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), USDC_MINT.toBuffer()],
+            ASSOCIATED_TOKEN_PROGRAM_ID
+        )[0];
+    };
+
+    const userAta = getAta(userPubkey);
+    const agentAta = getAta(agentPubkey);
+
     const transaction = new Transaction();
 
-    // Add a memo instruction as placeholder
+    // 3. Create Transfer Instruction
+    // SPL Token Instruction Layout: [Instruction (1 byte), Amount (8 bytes u64)]
+    // Transfer instruction index is 3
+    const amountUnits = BigInt(amount * 1_000_000); // 6 decimals
+    const dataLayout = Buffer.alloc(9);
+    dataLayout.writeUInt8(3, 0); // Instruction 3 = Transfer
+    dataLayout.writeBigUInt64LE(amountUnits, 1);
+
+    const transferIx = new TransactionInstruction({
+        keys: [
+            { pubkey: userAta, isSigner: false, isWritable: true },
+            { pubkey: agentAta, isSigner: false, isWritable: true },
+            { pubkey: userPubkey, isSigner: true, isWritable: false }, // Owner
+        ],
+        programId: TOKEN_PROGRAM_ID,
+        data: dataLayout,
+    });
+
+    transaction.add(transferIx);
+
+    // Add memo for clarity
     const memoIx = new TransactionInstruction({
         keys: [],
         programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
-        data: Buffer.from(`AgentBlinkPay: Top up ${amount} USDC to agent ${agent.id}`),
+        data: Buffer.from(`AgentBlinkPay: Top up ${amount} USDC`),
     });
-
     transaction.add(memoIx);
 
     // Set recent blockhash

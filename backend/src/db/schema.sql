@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS meters (
     -- Price per call in USDC smallest units (e.g., 50000 = $0.05)
     price_per_call INTEGER NOT NULL,
     
+    -- Currency for the price (default: 'USDC')
+    currency TEXT NOT NULL DEFAULT 'USDC',
+
     -- Whether this meter requires ZK policy verification
     requires_zk BOOLEAN NOT NULL DEFAULT TRUE,
     

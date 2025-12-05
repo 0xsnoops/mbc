@@ -80,6 +80,38 @@ export async function createCircleWallet(label: string): Promise<string> {
 }
 
 /**
+ * Gets the blockchain address for a Circle wallet.
+ * 
+ * @param walletId - The Circle wallet ID
+ * @returns The blockchain address (e.g. Solana public key)
+ */
+export async function getWalletAddress(walletId: string): Promise<string> {
+    console.log(`[Circle Stub] Getting address for wallet: ${walletId}`);
+
+    // =========================================================================
+    // TODO: Implement actual Circle API call
+    // =========================================================================
+    // 
+    // const response = await axios.get(
+    //   `${CIRCLE_API_URL}/w3s/wallets/${walletId}`,
+    //   { headers: { 'Authorization': `Bearer ${CIRCLE_API_KEY}` } }
+    // );
+    // return response.data.data.wallet.address;
+    // =========================================================================
+
+    // Stub: Return a fixed address for demo or deterministic from walletId
+    // In a real stub we must return a valid base58 Solana key to avoid PK errors
+    // distinct from "CiRcLe..."
+    // Using a known dummy key (e.g. one of the System Program accounts or a generated one)
+    // For this hackathon stub, we'll return a generated Keypair's pubkey
+    // derived deterministically or just a fixed valid one.
+    // Let's use a fixed one for consistency: "C1rcLeWaLLetAddress111111111111111111111111" (needs to be valid base58)
+    // Actually, just generate a random one if we don't care about persistence across restarts
+    // or use a hardcoded valid pubkey.
+    return 'Hv3K96Xeb85K6eE8qj9rTAwW3dwa97wBqKpw3sBCAi1y'; // Random valid pubkey
+}
+
+/**
  * Gets the USDC balance for a Circle wallet.
  * 
  * @param walletId - The Circle wallet ID
@@ -219,6 +251,24 @@ export async function sponsorTransaction(
     console.log(`[Circle Stub] Sponsoring transaction...`);
 
     // =========================================================================
+    // GAS STATION POLICY SCOPE
+    // =========================================================================
+    // 
+    // AgentBlinkPay uses Circle Gas Station to sponsor fees for:
+    // 1. authorize_payment_with_proof (ZK verification)
+    // 2. record_meter_payment (consumption)
+    // 
+    // Rate Limiting (Stubbed Logic):
+    // In production, we enforce:
+    // - Max 10 tx/min per agent wallet
+    // - Max 5 SOL/day global cap
+    // 
+    // Current Stub Behavior:
+    // - Always approves (infinite sponsorship)
+    // - Used for Hackathon Demo flow
+    // =========================================================================
+
+    // =========================================================================
     // TODO: Implement actual Circle Gas Station API call
     // =========================================================================
     // 
@@ -263,9 +313,9 @@ export async function sponsorTransaction(
 export function generateIdempotencyKey(
     agentPubkey: string,
     meterPubkey: string,
-    nonce: number,
+    nonce: number | bigint,
 ): string {
-    const data = `${agentPubkey}:${meterPubkey}:${nonce}`;
+    const data = `${agentPubkey}:${meterPubkey}:${nonce.toString()}`;
     return crypto.createHash('sha256').update(data).digest('hex');
 }
 

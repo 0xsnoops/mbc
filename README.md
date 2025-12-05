@@ -239,6 +239,42 @@ https://dial.to/action?action=solana-action:http://localhost:3000/api/actions/ag
                         └──────────────────┘
 ```
 
+## Mapping Model (Circle ↔ Solana)
+
+AgentBlinkPay bridges On-Chain Solana identity with Off-Chain Circle Programmable Wallets.
+
+**Why are mappings needed?**
+- **Agent Identity**: On-Chain, an agent is identified by a `Pubkey` (AgentPolicy PDA). Off-Chain, the agent holds funds in a Circle Wallet (`wallet_id`).
+- **Merchant Identity**: Meters are on-chain accounts, but settlements occur to a Merchant's Circle Wallet (`merchant_wallet_id`).
+
+**Data Flow**:
+1.  **Agent Creation**: We create a Circle Wallet and store the `circle_wallet_id` in the `agents` table, linked to the `agent_pubkey`.
+2.  **Top-Up**: When a user tops up an agent (via Blink), they send USDC on-chain to the Agent's Circle Wallet Address. Circle detects this incoming transfer and credits the wallet balance.
+3.  **Payment**: When a `MeterPaid` event occurs on-chain, the backend looks up the `circle_wallet_id` for the agent and the `merchant_wallet_id` for the meter, then executes a Circle Transfer.
+
+**Reconciliation**:
+- **Source of Truth**: Circle is the source of truth for balances. Solana is the source of truth for payment authorization and policy enforcement.
+- **Top-Up**: We use "Option A" - Direct on-chain transfer to the Agent's Circle Wallet Address. This simplifies the flow as Circle automatically indexes the balance.
+
+## Failure Handling & Retries
+
+To ensure robust settlements, we implement a multi-layered safety strategy:
+
+1.  **Finality Buffer**: We wait for **32 slots** (approx 12s) after a `MeterPaid` event before initiating a transfer. This prevents acting on forked/dropped blocks.
+2.  **Idempotency**: Every payment event is hashed (`hash(agent_pubkey + meter_pubkey + nonce)`) to generate a unique `event_id`. This ID is used as the Circle Transfer idempotency key, ensuring that even if we process the same event twice, only one USDC transfer occurs.
+3.  **At-Least-Once Processing**: The listener runs a background job to catch any "pending" or "stuck" payments (e.g., if the server restarts mid-process).
+4.  **Recovery**: On startup, the system scans for `pending_finality` and `processing` records to resume their settlement flow.
+
+
+## ZK Verification Design
+
+We use a **CPI-based Verification Architecture** to keep the main program lightweight and modular.
+
+-   **Verifier Placement**: The ZK verifier is deployed as a separate, Sunspot-generated Solana program.
+-   **Integration**: `AgentBlinkPay` makes a Cross-Program Invocation (CPI) to the verifier, passing the proof and public inputs (`amount`, `category`, `policy_hash`).
+-   **Compute Budget**: ZK verification allows roughly ~200k CU. By keeping public inputs minimal (hash commitments), we stay well within the standard transaction limits.
+-   **MVP State**: The local codebase currently uses a "Stub Verifier" that mimics the interface and compute profile of the real verifier to facilitate rapid testing without local prover generation overhead.
+
 ## Key Features
 
 - **ZK-Enforced Policies**: Agents prove payment compliance without revealing full policy details
@@ -246,6 +282,45 @@ https://dial.to/action?action=solana-action:http://localhost:3000/api/actions/ag
 - **x402 Gateway**: Turn any HTTP API into a pay-per-call endpoint
 - **Blinks Control**: Freeze/unfreeze/top-up agents from social media
 - **Event-Driven Payments**: Solana events trigger Circle USDC transfers
+
+
+## Token Units & Decimals
+
+AgentBlinkPay strictly uses **USDC (6 decimals)** for all pricing and settlements.
+
+-   **Base Units**: All on-chain values (`price_per_call`, `max_per_tx`) are stored in base units (integer).
+    -   Example: `$0.05` is stored as `50000`.
+-   **SDK Helpers**: The SDK provides `UsdcUnits.toBaseUnits(amount)` and `.fromBaseUnits(amount)` to avoid precision errors.
+-   **API Inputs**: The `POST /providers/meters` endpoint expects `pricePerCall` in **base units**.
+
+
+## Replay Protection
+
+AgentBlinkPay prevents replay attacks (re-submitting a used payment authorization) via a 3-pronged approach:
+
+1.  **Unique Nonces**: Every payment authorization includes a 64-bit cryptographically secure random nonce.
+2.  **On-Chain State**: The `Authorization` account PDA `["auth", agent, meter, nonce]` is marked as `used=true` upon consumption. The program logic `require!(!auth.used)` prevents reuse.
+3.  **Expiry (TTL)**: Authorizations include an `expires_at_slot` (default 150 slots / ~60s). The program rejects checks if `current_slot > expires_at_slot`.
+
+
+## Agent Authentication Model
+
+To prevent unauthorized wallet usage, the backend enforces strict API Key authentication:
+
+1.  **Creation**: When an agent is created (`POST /agents`), an `api_key` (`ak_...`) is returned. This key effectively controls the agent's wallet.
+2.  **Storage**: The SDK stores this key and sends it in the `x-agent-api-key` header for all requests.
+3.  **Enforcement**: The `/agents/:id/pay` endpoint validates that the provided header matches the stored key for the requested agent ID. Mismatches result in `401 Unauthorized`.
+
+
+## Gas Sponsorship
+
+We use **Circle Gas Station** to provide a seamless, gasless experience for AI Agents.
+
+-   **Scope**: Transaction fees are sponsored for key protocol instructions (`authorize_payment`, `record_payment`).
+-   **Policy**:
+    -   **Rate Limits**: Capped at 100 transactions per agent/hour to prevent drain.
+    -   **Global Cap**: Hard cap of 10 SOL/day for the entire platform.
+-   **Implementation**: Agents build transactions with `feePayer = ServiceRelayer`, ensuring they never need to hold SOL, only USDC.
 
 ## License
 

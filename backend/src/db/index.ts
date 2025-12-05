@@ -71,7 +71,7 @@ export interface Payment {
   agent_id: string;
   meter_id: string;
   amount: number;
-  nonce: number;
+  nonce: number | bigint;
   category: number;
   slot: number;
   from_wallet_id: string;
@@ -174,6 +174,10 @@ export const payments = {
 
   findByAgent: db.prepare(`
     SELECT * FROM payments WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?
+  `) as any,
+
+  listAll: db.prepare(`
+    SELECT * FROM payments ORDER BY created_at ASC
   `) as any,
 };
 
